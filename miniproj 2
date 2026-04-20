@@ -1,0 +1,967 @@
+---
+title: "Mini Project 2"
+author: "Annette Botanga, Casimir Galliot, Maria Ponce, Swathy Ajikumar, Ivy Hwang"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    self_contained: true
+    theme: flatly
+    toc: true
+    toc_float: true
+    number_sections: true
+---
+## Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 9,
+  fig.height = 6
+)
+```
+
+## Installation and Package management
+
+```{r install packages}
+# install.packages
+```
+
+```{r load packages}
+
+library(ggplot2)
+library(ggridges)
+library(tidyverse)
+library(conflicted)
+library(scales)
+ 
+library(plotly)
+library(flexdashboard)
+library(htmltools)
+library(crosstalk)
+library(sf)
+library(GGally)
+library(leaflet)
+
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::select)
+conflicts_prefer(plotly::layout)
+
+
+
+library(tigris)
+library(viridis) 
+```
+
+### Goal
+
+To identify and analyze relationships between health outcomes, environmental exposures, and socioeconomic/demographic factors.
+
+## Reading in data
+
+```{r reading in data}
+# reading in the excel/csv file
+df1 <- read.csv("Chi_Health_Atlas_Data.csv")
+```
+
+## Initial Data Exploration
+
+```{r inspect data}
+View(df1) # Opens data frame
+dim(df1) # Number of rows and columns
+head(df1) # Quick overview of columns, rows, type of column, etc.
+names(df1) # Column names
+colSums(is.na(df1)) # Number of observations in a given column
+```
+
+## Cleaning up data
+
+```{r cleaning data - ab}
+# removing columns irrelevant to our goals
+df1_clean <- df1 |> select(-c(CHAVCNN_2023, CHARIPZ_2023.2024, CHASWYW_2023.2024, Layer, LNG_2023, HCSNL_2023.2024, HCSNLP_2023.2024, POP_2020.2024)) |>
+
+# there are 4 columns that still need to be accurately represented as percentages, large numbers get transformed
+  mutate(across(c(HCSATH_2023.2024, HCSDIA_2023.2024), ~. /100)) |> mutate(across(c(HCSHYT_2023.2024, HCSOB_2023.2024), ~. /1000))  |> mutate(CHAKNKC_2023 = ceiling(CHAKNKC_2023)) # mutate the CHAKNKC row so that the numbers are rounded
+
+```
+
+
+## 1. Map of Environmental Justice (EJ) Priority
+
+```{r}
+# Clean ID to match map
+df2 <- df1_clean %>%
+  select(Name, GEOID, CHAKNKC_2023) %>%
+  mutate(GEOID = as.character(as.numeric(GEOID)))
+
+# Downloaded the Chicago Neighborhood Boundaries
+boundary_url <- "https://data.cityofchicago.org/resource/igwz-8jzy.geojson"
+chicago_shapes <- st_read(boundary_url) %>% 
+  st_transform(4326) %>%
+  mutate(area_num = as.character(as.numeric(area_numbe))) # Changed ID to add
+
+# Added the data to the map
+map_data <- chicago_shapes %>%
+  left_join(df2, by = c("area_num" = "GEOID"))
+
+# Created Color Palette
+pal <- colorNumeric(
+  palette = "YlOrRd", 
+  domain = map_data$CHAKNKC_2023[map_data$CHAKNKC_2023 > 0],
+  na.color = "grey"
+)
+
+# Interactive Map
+leaflet(map_data) %>%
+  addTiles() %>%  # Background map
+  addPolygons(# Colors for scores > 0, if not grey
+    fillColor = ~ifelse(CHAKNKC_2023 == 0 | is.na(CHAKNKC_2023), "grey", pal(CHAKNKC_2023)),
+    weight = 1.5,
+    color = "white",      # Added boundaries for each neighborhood
+    fillOpacity = 0.7,
+    label = ~paste0(Name, ": ", CHAKNKC_2023), # Hover Label: Neighborhood Name
+    popup = ~paste0("<strong>Neighborhood: </strong>", Name,  # Click: Shows Exact Number
+                    "<br><strong>EJ Priority Score: </strong>", CHAKNKC_2023)
+  ) %>%
+  addLegend(
+    pal = pal, 
+    values = ~CHAKNKC_2023, 
+    title = "EJ Priority Score"
+  )
+```
+
+*The interactive map of Environmental Justice Priority Scores demonstrates a spatial disparity across Chicago. Areas with high priority scores are predominantly located in the west and south side neighborhoods, indicating that the higher cumulative burden of environmental and socioeconomic vulnerability are likely to be found in these areas. On the other hand, the North and downtown areas revealed lower scores. This visualization serves as a baseline for our project, highlighting the specific communities where the health outcomes are likely to be impacted by environmental factors.*
+
+
+
+## 2. Green vs. Gray: Parks and Traffic Maps
+
+```{r}
+library(leafsync)
+
+df_env <- df1_clean %>%
+  mutate(GEOID = as.character(as.numeric(GEOID)))
+
+map_env <- chicago_shapes %>%
+  left_join(df_env, by = c("area_num" = "GEOID"))
+
+pal_parks <- colorNumeric("Greens", domain = map_env$PMC_2020, na.color = "grey")
+pal_traffic <- colorNumeric("OrRd", domain = map_env$TRF_2020, na.color = "grey")
+
+# Park Coverage map
+map_parks <- leaflet(map_env) %>%
+  addTiles() %>%
+  addPolygons(
+    fillColor = ~pal_parks(PMC_2020),
+    weight = 1.5, color = "white", fillOpacity = 0.7,
+    label = ~paste0(Name, ": ", round(PMC_2020, 1))
+  ) %>%
+  addLegend(pal = pal_parks, values = ~PMC_2020, title = "Park Coverage", position = "bottomright")
+
+# Traffic risk map
+map_traffic <- leaflet(map_env) %>%
+  addTiles() %>%
+  addPolygons(
+    fillColor = ~pal_traffic(TRF_2020),
+    weight = 1.5, color = "white", fillOpacity = 0.7,
+    label = ~paste0(Name, ": ", round(TRF_2020, 1))
+  ) %>%
+  addLegend(pal = pal_traffic, values = ~TRF_2020, title = "Traffic Exposure", position = "bottomright")
+
+# Side by side sync
+sync(map_parks, map_traffic)
+```
+
+*Park coverage and traffic exposure are the two opposite environmental forces, where park access enhances health, while traffic exposure is a stressor. Mapping both factors together allowed us to visualize the distribution of the environmental benefits and the harms equally across the Chicago neighborhoods. The park access map shows a darker green on the western and southern side of Chicago community areas, while there is still a uniform score across Chicago. The traffic map demonstrated only one or two neighborhoods near the West side and Loop area with high exposures, indicated by dark red. This concentration suggests that the highway interchanges in these areas could be a possible driver. The finding is that the neighborhoods with the highest traffic burden are not the same areas with the highest park access. The mismatch, therefore, illustrates an environmental injustice. The communities that are absorbing the most harm are not compensated by green spaces. While the South and west sides have high park access, they still have a high environmental justice burden from the previous plot, meaning the parks are not protective enough against other stressors.*
+
+
+
+## 3. Demographic Baseline Map
+
+```{r}
+# Pull % White population
+df3 <- df1_clean %>%
+  select(Name, GEOID, PCT.W_2020.2024) %>%
+  mutate(GEOID = as.character(as.numeric(GEOID)))
+
+# Join with Chicago shapes
+map_data_demo <- chicago_shapes %>%
+  left_join(df3, by = c("area_num" = "GEOID"))
+
+# Color palette
+pal3 <- colorNumeric(
+  palette = "RdBu",
+  domain = c(0, 100),
+  na.color = "grey"
+)
+
+# Map
+leaflet(map_data_demo) %>%
+  addTiles() %>%
+  addPolygons(
+    fillColor = ~pal3(PCT.W_2020.2024),
+    weight = 1.5,
+    color = "white",
+    fillOpacity = 0.75,
+    label = ~paste0(Name, ": ", round(PCT.W_2020.2024, 1), "% White")) %>%
+  addLegend(
+    pal = pal3,
+    values = ~PCT.W_2020.2024,
+    title = "% White Population (2020–2024)")
+```
+
+*The visualization of the White population percentage reveals the geographic divide that characterizes Chicago's residential landscape. The map shows a clear pattern where the highest concentrations of the white population is found along the North side and the Lakefront, while the West and South side neighborhoods show significantly lower percentages. The neighborhoods with the lowest white population percentages are overlapping with the regions facing the highest environmental burdens shown previously by the environmental justice plot. This suggests that socioeconomic and racial demographics are powerful predictors of environmental exposure. This demonstrates the link between the structural and environmental inequities present in these specific areas.*
+
+
+
+## 3.5. Scatter Plot: EJ Score vs. Environmental Factors
+
+```{r scatter-ej-correlation}
+
+df4 <- df1_clean %>%
+  filter(CHAKNKC_2023 > 0) %>%
+  select(Name, CHAKNKC_2023, PMC_2020, TRF_2020) %>%
+  drop_na()
+
+# Park Coverage plot
+p1 <- ggplot(df4, aes(x = PMC_2020, y = CHAKNKC_2023)) +
+  geom_point(color = "darkgreen", size = 2, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE, color = "darkgreen", linetype = "dashed") +
+  labs(title = "Park Coverage vs. EJ Priority Score",
+       x = "Park Coverage (PMC_2020)", y = "EJ Priority Score") +
+  theme_minimal()
+
+# Traffic risk plot
+p2 <- ggplot(df4, aes(x = TRF_2020, y = CHAKNKC_2023)) +
+  geom_point(color = "darkred", size = 2, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE, color = "darkred", linetype = "dashed") +
+  labs(title = "Traffic Risk Factor vs. EJ Score",
+       x = "Traffic Exposure (TRF_2020)", y = "EJ Priority Score") +
+  theme_minimal()
+
+# Display both
+p1 + p2
+```
+
+```{r}
+# p-value for the Park Coverage plot
+summary(lm(CHAKNKC_2023 ~ PMC_2020, data = df4))
+# p-value for the Traffic Risk plot
+summary(lm(CHAKNKC_2023 ~ TRF_2020, data = df4))
+```
+
+*The linear regression analysis for the drivers of the environmental burden had p-values of 0.51 for park coverage plot and 0.14 for traffic risk factor plot. While the p-value for traffic is not statistically significant, a notably lower value compared to that of a park coverage suggests a stronger directional trend. It implies that the traffic stressors may play a more dominant role for environmental burden than the presence of the green areas, which are acting as a buffer.*
+
+
+
+## 4. Population vs EJ Priority
+For context, Environmental Justice (EJ) priority areas are communities that face a disproportionate burden of pollution, hazardous waste, and health disparities. They're typically low-income neighborhoods and communities of color that are specifically targeted for policy intervention and investment. This visualization plots each Chicago neighborhood's total population against the number of residents living within EJ priority areas. The goal is to identify which neighborhoods carry the heaviest EJ burden... not just in raw numbers, but relative to their size. A neighborhood with a small population but a high number of EJ residents tells a very different story than a large neighborhood with the same count, and this scatter plot makes those distinctions immediately visible through interactivity.
+
+```{r}
+# need to use Population (x axis) and CHAKNKC_2023, or the number of residents in environmental justice priority areas (y axis)
+# made a specific df for this plot so that it doesn't overwrite and interfere with components on future/previous dataframes
+df_popvsej <- df1_clean |> mutate(
+  Population = as.numeric(Population)) |>
+ mutate(text = paste( "<span style='font-size:16px;'><b>", Name, "</b></span><br>", # makes a title of sorts to highlight each neighborhood name
+    "\nPopulation: ", Population,
+    "\nResidents in Eviornmental Justice Areas: ", CHAKNKC_2023)
+  )
+
+# i made a new column containing text so that tooltip would be customized to the text that i wanted with proper labeling
+
+popvsej <- ggplot(df_popvsej, aes(x = Population, y = CHAKNKC_2023, fill = Name, text=text)) +
+  geom_point(alpha = 0.6, size = 3) +
+  labs( title = "Population vs EJ Priority",
+    x = "Total Population",
+    y = "Residents in Enviornmental Justice areas"
+  ) +
+  theme_minimal() + theme()
+
+ggplotly(popvsej, tooltip= "text")
+
+
+```
+
+It is to note that all neighborhoods that fall along the x-axis directly are neighborhoods that DO NOT have any residents living in at risk.
+The legend doesn't serve the purpose of a traditional legend; the interactivity that ggplotly provides helps to easily find a specific neighborhood, as they're listed in alphabetical order. Selecting any neighborhood on that list will allow you to help isolate and identify where it is on the plot. The scatter plot reveals a clear divide between neighborhoods that have essentially no EJ residents at all, being clustered flat along the x-axis, and those that carry an enormously disproportionate burden. The neighborhoods sitting along the x-axis are areas where zero or near-zero residents fall within EJ priority designations, suggesting relatively lower environmental and health stressors. On the other end, neighborhoods like West Garfield Park and Burnside stand out sharply. Burnside in particular is extremely interesting because with a population of only 2,514, it has 2,509 residents in EJ priority areas. This implies nearly the entire neighborhood lives under environmental justice burden conditions. 
+
+To break this down even further, here is a look at the top 15 neighborhoods exeriencing the most EJ burden, according to the ratio between EJ-affected residents, and the total population in that neighborhood as a whole
+```{r}
+df_popvsej_ratio <- df_popvsej |>
+  mutate(
+    EJ_ratio = CHAKNKC_2023 / Population #dividing EJ by population to get percentages
+  )
+
+top15_popvsej <- df_popvsej_ratio |>
+  arrange(desc(EJ_ratio)) |>
+  slice(1:15)
+
+top15_popvsej |>
+  mutate(EJ_ratio = scales::percent(EJ_ratio, accuracy = 0.1)) |>
+  select(Name, Population, CHAKNKC_2023, EJ_ratio)
+
+```
+
+The top 15 EJ ratio table reinforces what was assumed earlier; the neighborhoods with the highest burden are not necessarily the largest ones. South Lawndale, North Lawndale, and West Garfield Park all appear in the top 15 despite having moderate populations, suggesting that geography and disinvestment, not just population size, are the primary drivers of EJ designation. Austin, the most "popular" neighborhood in the dataset at 96,753 residents, also appears in the top 15 with a 74.3% EJ ratio, meaning that even at scale, nearly three quarters of its residents live under these conditions.
+
+
+## 5. Air Quality Perception vs Asthma (The Gap)
+ 
+# Goal: highlight neighborhoods where residents think air quality is good, however asthma rates are high. 
+
+```{r}
+p1 <- ggplot(df1_clean, aes(
+  x = CHASBQJ_2023.2024, #x-axis: residents’ perception of air quality
+  y = HCSATH_2023.2024, #y-axis: clinically measured asthma rates
+  text = paste( #For interactivity 
+    "Neighborhood:", Name,
+    "<br>Perception:", CHASBQJ_2023.2024,
+    "<br>Asthma:", HCSATH_2023.2024
+  )
+)) +
+
+# To plot each neighborhood as a point:
+  geom_point(aes(color = HCSATH_2023.2024), size = 3, alpha = 0.8) +
+  scale_color_viridis_c() + #color represents asthma severity. Chose transparent to show overlap
+
+# Adding labels and title
+  labs(
+    x = "Good/Excellent Air Quality % Reported",
+    y = "Adults with Asthma %",
+    title = "Residents Perception vs Asthma Rates"
+  ) +
+  theme_minimal()
+
+# Adding interactivity
+ggplotly(p1, tooltip = "text")
+
+```
+
+*The purpose of this plot is to compare residents’ perception of air quality with actual clinical asthma rates across neighborhoods. Each point represents a neighborhood, and the color intensity reflects asthma severity. We can easily identify mismatches between perception and reality from this visualization. If residents’ perception would match asthma rates, we would see a pattern where better perceived air quality matches with lower asthma rates. Neighborhoods located in the bottom-right show high perceived air quality as well as high asthma rates. This suggests that residents might underestimate or overestimate environmental health risks in their area. This visualization was created to highlight gaps in awareness and identify which neighborhoods might underestimate environmental risks.* 
+
+
+## 6. Neighborhood Environmental Profiles
+
+*Goal: Compare four specific neighborhoods to show how their "environmental personalities" differ.*
+
+```{r}
+# Select four neighborhoods
+selected_neighborhoods <- df1_clean %>%
+  filter(Name %in% c("Austin", "Englewood", "Lincoln Park", "Hyde Park"))
+
+# To keep only the relevant variables
+radar_data <- selected_neighborhoods %>%
+  select(Name, CHABXHK_2023.2024, CHASBQJ_2023.2024, TRF_2020)
+
+# To normalize values (0–1 scale so variables are comparable)
+radar_scaled <- radar_data %>%
+  mutate(across(-Name, ~ (. - min(.)) / (max(.) - min(.))))
+
+# Create radar chart
+fig <- plot_ly(type = 'scatterpolar', fill = 'toself')
+
+for(i in 1:nrow(radar_scaled)) {
+  fig <- fig %>%
+    add_trace(
+      r = as.numeric(radar_scaled[i, -1]),  # Values for each variable
+      theta = c("Trust", "Perception", "Traffic"), # Axis labels
+      name = radar_scaled$Name[i]           # Neighborhood name
+    )
+}
+
+# Layout
+fig <- fig %>%
+  plotly::layout(
+    title = "Neighborhood Environmental Profiles",
+    polar = list(radialaxis = list(visible = TRUE))
+  )
+
+fig
+```
+
+*The purpose of this plot is to compare four neighborhoods across three dimensions: trust in government decisions about pollution, perceived air quality, and traffic exposure. Each neighbor has its own range that allows to highlight relative differences between the neighborhoods to have direct comparison across different types of measures. This visualization is useful for identifying patterns in how neighborhoods perceive environmental conditions. A neighborhood with high exposure to traffic and high perceived air quality could indicate lack of awareness of pollution sources. Similarly, when trust levels deviate from each neighborhood we can highlight their confidence in government decisions.*
+
+
+## 7. Racial Composition vs Institutional Trust
+
+*Goal: Explore the societal story- does the racial makeup of a neighborhood correlate with how much residents trust the government on pollution decisions?*
+
+```{r}
+p3 <- ggplot(df1_clean, aes(
+  x = PCT.W_2020.2024, #x-axis: percentage of white population
+  y = CHABXHK_2023.2024, #y-axis: trust 
+  text = paste( # tooltip for interactivity
+    "Neighborhood:", Name,
+    "<br>% White:", PCT.W_2020.2024,
+    "<br>Trust:", CHABXHK_2023.2024
+  )
+)) +
+
+# Plot each neighborhood 
+  geom_point(color = "steelblue", size = 3, alpha = 0.7) +
+  geom_smooth(method = "lm", se = TRUE, color = "red") + #added regression line to show 
+
+# Trends
+  labs(
+    x = "White Population %",
+    y = "Trust in Government %",
+    title = "Racial Composition vs Trust"
+  ) +
+  theme_minimal()
+
+# Convert it to interactive plot
+ggplotly(p3, tooltip = "text")
+
+```
+
+*The goal of this plot is to observe whether institutional trust varies systematically with neighborhood demographics. It displays the percentage of White residents’ vs trust in government decisions about pollution. If the relationship lays on the upward slope, it suggests that neighborhoods with higher percentages of White residents tend to report higher levels of trust. On the other hand, if the relationship lays downward, it indicates a different or a weaker relationship between the two variables. Examining this relationship is important because trust influences how communities respond to environmental policies as well as public health initiatives. This visualization is useful because it shows patterns in social and environmental equity. Understanding this relationship is important because government trust from neighborhoods can influence how the public responds to environmental policies.*
+
+
+## Custom Tooltip
+
+```{r Custom tooltip data}
+# Generating a custom tooltip for interactive plots
+df1_clean <- df1_clean %>%
+  mutate(
+    tooltip_text = paste0(
+      "<b>Neighboorhood:</b> ", Name, "<br>",
+      "<b>Percent Trust:</b>", CHABXHK_2023.2024, "<br>",
+      "<b>Percent Hypertension:<b>", HCSHYT_2023.2024, "<br>",
+      "<b>Percent Diabetes:</b> ", HCSDIA_2023.2024, "<br>",
+      "<b>Percent Asthma:</b> ", HCSATH_2023.2024, "<br>",
+      "<b>Total Population:</b>", Population, "<br>",
+      "<b>Percent White Population:</b> ", PCT.W_2020.2024))
+```
+
+-------------------------------------
+
+## 8. Institutional Trust & Hypertension
+
+*Goal: To show how institutional trust in local government pollution decisions might relate to physiological markers like blood pressure and asthma.*
+
+```{r Static plot of institutional trust and hypertension rates}
+p8_static <- ggplot(
+  df1_clean, 
+  aes(
+    x = CHABXHK_2023.2024, 
+    y = HCSHYT_2023.2024)) +
+  
+  geom_boxplot(size = 1, color = "darkgray", width = 0.2) +
+  
+  geom_jitter(color = "blue", alpha = 0.7) +
+  labs(
+    x = "Percent Trusting Local Govt. on Pollution Decisions",
+    y = "Hypertension Rate",
+    title = "Trust and Hypertension") +
+  theme_minimal(base_size = 13)
+
+p8_static
+```
+
+## 9. Institutional Trust & Asthma
+
+```{r Static plot of institutional trust and asthma rates}
+p9 <- ggplot(
+  df1_clean, 
+  aes(
+    x = CHABXHK_2023.2024, 
+    y = HCSATH_2023.2024)) +
+  
+  geom_boxplot(size = 1, color = "darkgray", width = 10) +
+  
+  geom_jitter(color = "blue", alpha = 0.7) +
+  labs(
+    x = "Percent Trusting Local Govt. on Pollution Decisions",
+    y = "Asthma Rate",
+    title = "Trust and Asthma") +
+  theme_minimal(base_size = 13)
+
+p9
+```
+
+```{r Correlation Heatmap}
+# Correlation heatmap of data to identify areas of future inquiry.
+
+ggcorr(df1_clean[, c("CHABXHK_2023.2024", "HCSHYT_2023.2024", "PCT.W_2020.2024", "HCSATH_2023.2024", "HCSOB_2023.2024", "HCSDIA_2023.2024")], label = TRUE)
+
+# Institutional trust has little to no correlation to anything, except perhaps the percent of the population that is white- where we see a slight correlation such that higher percentage of white people = greater percent trust in govt. Other areas reveal significant correlation, such as obesity and hypertension, asthma, and diabetes. There is also a negative correlation between the percent of the population that is white and diabetes- this is not significant enough, but does warrant further inquiry to see if there could be something there.
+```
+
+*There are no apparent trends between the trust people do or do not have in their local governments ability to make good decisions on pollution control and management and hypertension, or asthma. This is not what we expected as low trust is indicative of poor decisions by the local government, resulting in bad health effects. This lack of trends, however, is consistent with what was revealed in plot 5, where residents in some neighborhoods rate the air as being "good" despite asthma rates being clinically high. There is a significant disconnect between how some people view their and their neighborhoods' health and the actual health of the residents.*
+
+
+```{r Failed interactive plot of institutional trust and hypertension rates}
+#p8_int <- ggplot(
+#  df1_clean, 
+#  aes(
+#    x = CHABXHK_2023.2024, 
+#    y = HCSHYT_2023.2024,
+#    text = tooltip_text)) +
+  
+#  geom_boxplot(size = 1, color = "darkgray") +
+#  geom_jitter(color = "blue", alpha = 0.7) +
+#  labs(
+#    x = "Percent Trusting Local Govt. on Pollution Decisions",
+#    y = "Hypertension Rate",
+#    title = "Trust and Hypertension") +
+#  theme_minimal(base_size = 13)
+
+#ggplotly(p8_int, tooltip = "text")
+
+# ggplotly does not like boxplots apparently, each time i try to add an interactive element- the box disappears and no amount of finagling has worked for me thus far
+```
+
+```{r Failed interactive plot of institutional trust and hypertension rates}
+# plot_ly(
+#  data = df1_clean,
+#  x = ~CHABXHK_2023.2024,
+#  y = ~HCSATH_2023.2024,
+#  type = "box",
+#  mode = "markers",
+#  hovertext = ~tooltip_text,
+#  hoverinfo = "text",
+#  marker = list(size = 10, opacity = 0.75)
+#) |>
+#  plotly::layout(
+#    title = list(text = "Percent Trusting Local Govt. on Pollution Decisions", x = 0),
+#    xaxis = list(title = "Percent Trusting Local Govt. on Pollution Decisions"),
+#    yaxis = list(title = "Hypertension Rate")
+#  )
+```
+
+-------------------------------------
+
+## 10. Metabolic Disease Cluster
+
+Goal: To visualize comorbidities (obesity and diabetes) according to total population size and mapped to different parts of the city. Additionally, we will determine if there is any correlation between the two, if this is significant, and what this might mean for people's health.
+
+```{r Static plot of Obesity and Diabetes by Total Population}
+#p10_static <- ggplot(
+#  df1_clean, 
+#  aes(
+#    x = HCSOB_2023.2024, 
+#    y = HCSDIA_2023.2024,
+#    size = Population)) +
+#  
+#  geom_point(alpha = 0.6, color = "darkred") +
+#  labs(
+#    x = "Percent Adults with Obesity",
+#    y = "Percent Adults with Diabetes",
+#    title = "Obesity and Diabetes sized by Total Population") +
+#  theme_minimal(base_size = 13) +
+#  scale_size(range = c(.1, 10), name="Total Population")
+#  
+#p10_static  
+```
+
+```{r Interactive Plot of Obesity and Diabetes by Total Population}
+p10_int <- ggplot(
+  df1_clean, 
+  aes(
+    x = HCSOB_2023.2024, 
+    y = HCSDIA_2023.2024,
+    size = Population,
+    text = tooltip_text)) +
+  
+  geom_point(alpha = 0.6, color = "darkred") +
+  labs(
+    x = "Percent Adults with Obesity",
+    y = "Percent Adults with Diabetes",
+    title = "Obesity and Diabetes sized by Total Population") +
+  theme_minimal(base_size = 13) +
+  scale_size(range = c(.1, 10), name="Total Population")
+  
+ggplotly(p10_int)
+```
+
+```{r analysis of data including p-value}
+summary(lm(HCSOB_2023.2024 ~ HCSDIA_2023.2024, data = df1_clean))
+```
+
+*The rates of obesity and the rates of diabetes across Chicago appear to be highly correlated. Statistical analysis gives us a p-value far below 0, indicating that this data is not randomly associated but likely correlated and may share similar causes. Population size does not appear to be correlated to either of these, but rather that more people means a greater variety in health conditions. There are some neighborhoods that stand out, having the greatest rates of obesity and diabetes, such as Austin and South Lawndale. Some neighborhoods with the smallest rates of the two are Oakland, O'Hare (Important note: we do not have the rates of asthma, so this may be incorrect until we get more data to confirm), and Fuller Park. We investigate these neighborhoods later on, inspecting possible causes and other health conditions, and how they all interact.*
+
+## 11. Park Access vs. Obesity 
+
+```{r}
+# Create North, South, and Central separation of the Chicago Neighborhoods. 
+quantile(df1_clean$Latitude, c(0.33, 0.67)) 
+#The quantile function helps calculate the values that divide ranked data into specified equal-sized groups. Since we're trying to separate these into 3 equal sections (not considering east because that's mainly just the lake), we take 1/3 (0.33) and 2/3 (0.67). So this returns exact latitude points in which less than 0.33% implies the Southern area, between 0.33% - 0.67% implies the Central separation (middle section), and greater than 0.67% are the Northern Neighborhoods. This can be done in as many sections as we need (For example, I could have done 4, but out of not wanting to accidentally mix neighborhoods from the east side up, I kept it to 3)
+
+#now we need to create basically multiple "if-else" statements (using case_when) to make the sections: 
+
+df1_clean <- df1_clean %>%
+  mutate(result = case_when(Latitude < 41.78060 ~ "South", 
+  41.78060 < Latitude & Latitude < 41.89917 ~ "Central", 
+  TRUE ~ "North"), #Everything else will fall under north basically. everything that hasn't been accounted for. 
+  result = as.factor(result) #This changes the existing character of result into a vector for us to actually use in the graph as a color result. 
+  )
+# Make the Hover text : 
+df1_clean <- df1_clean |>
+  mutate(hover_label = paste0(
+      "Name: ", Name,
+      "<br>Population: ", Population,
+      "<br>Park Access: ", round(PMC_2020),
+      "<br>Obesity Rate: ", round((HCSOB_2023.2024/Population) * 100), "%",
+      "<br>Diabetes Rate: ", round((HCSDIA_2023.2024/Population) *100), "%" #Doing this because it looks like the data set has actually included the COUNT of people with diabetes or obesity rather than the percentage. This returns cleaner looking values to display for the percentage. 
+    ))
+# This is the interactive graph 
+# conflicts_prefer(plotly::layout)
+plot_ly(
+  data = df1_clean,
+  x = ~PMC_2020,
+  y = ~(HCSOB_2023.2024/Population) * 100,
+  color = ~result,
+  type = "scatter",
+  mode = "markers",
+   hovertext = ~hover_label,
+   hoverinfo = "text", 
+  marker = list(size = 10, opacity = 0.5)
+) |>
+  plotly::layout(
+    title = list(text = "Obesity and Diabetes Rates in Relation to Park Access", x = 0),
+    xaxis = list(title = "Park access metric"),
+    yaxis = list(title = "Obesity (%)"),
+    legend = list(orientation = "h", x = 0, y = -0.25),
+    margin = list(l = 70, r = 20, b = 70, t = 60)
+  )|>
+  highlight(on = "plotly_click", off = "plotly_doubleclick") #double click to isolate that particular location, single click to remove that particular location and leave the remaining. 
+
+```
+
+## What Does This Plot Mean?: 
+*First thing to of course notice is that we have plotted the Park Accessibility against obesity percentages for the populations in each neighborhood. The neighborhoods are separated by sections/regions: North, Central, and South. With the interactive tool of single or double clicking the regions, it allows you to focus on specific areas or remove them from the graph so you can hover over particular points and get clearer information about their population or the specific percentage of obesity AND diabetes it presents in that particular location. The graph itself displays very scattered points and doesn't show as clear of a linear relationship between obesity and Park access. The North points are concentrated towards the left of the graph, meaning less park access. However, most of the obesity points are not particularly high compared to the Central and South regions. In fact, the few points that do have more park access actually demonstrate more obesity rates. But if we look at the South region, the points cluster further to the right, implying to more park access. Still, some of the obesity rates are fairly high even with higher park access. So in some of these cases, we can say that more park access doesn't necessarily correlate to less obesity. This could mean there are other factors, maybe income or the environment that impacts the percentage of adults with obesity in those neighborhoods. 
+Something to note in terms of data, is that the park access data range is actually fairly small, ranging mainly between values like 8.6 - 9.7. Which may mean, in general, there may not be a lot of parks that makes it a meaningful variable to predict anything.*
+
+
+
+
+## 12. The Clinical Comorbidity Heatmap
+
+```{r}
+#First, we need to create clean and converted variables. 
+
+#To find if there are any NA values in the 4 health condition variables, You can summarize the column values and see if there are any and if they're spread among different columns or just for one particular one. 
+
+colSums(is.na(df1_clean[, c("HCSOB_2023.2024", "HCSHYT_2023.2024", "HCSDIA_2023.2024", "HCSATH_2023.2024")]))
+#Asthma and Diabetes has some NA's but not many.. is it worth removing those and messing with the data? Can we work around it? This could have happened because they weren't tested in particular locations, could be due to having such small populations that it wouldn't build reliable values/estimates, and more. 
+
+#use cor() with pairwise.complete.obs, which uses all available non missing pairs for each calculation. Since we're only missng 3 and 5 in the other two categories, we can test and see if it creates a big difference before we move into interactivity. 
+
+ds <- df1_clean %>%  #Have to use select function here, otherwise it will read the data p
+  select(
+  "Obesity" = HCSOB_2023.2024, 
+  "Hypertension" = HCSHYT_2023.2024, 
+  "Diabetes" = HCSDIA_2023.2024,
+  "Asthma" = HCSATH_2023.2024)
+
+corr<- cor(ds, use = "pairwise.complete.obs") #gives the correlation matrix with parts excluding the NA values. 
+#Obesity and hypertension has a correlation of 0.877, meaning there's a strong relationship between the two and if a person is obese they most likely also have hypertension. Same with diabetes, with a correlation of 0.879. An even stronger relationship. Obesity and Asthma have a smaller relationship (0.767) since asthma can be affected by environmental factors. BUT it's still strong enough to suggest there is some relationship. The weakest relationship here is between Diabetes and Asthma (0.685), which reinforces that asthma is backed up by some other factor compared to the other three. 
+
+#Make the matrix into a data frame: 
+corr_d <- as.data.frame(as.table(corr)) #right now, as.data.frame takes the matrix and turns it into a data set, as.table displays the data as variable 1 vs. Variable 2, and the correlation between those two values. Returning 16 data point. 
+colnames(corr_d) <- c("Health_Condition1", "Health_Condition2", "Correlation")
+corr_d$Health_Condition1 <- as.character(corr_d$Health_Condition1)
+corr_d$Health_Condition2 <- as.character(corr_d$Health_Condition2)
+corr_d <- corr_d %>%
+  mutate(relationship = case_when(
+    abs(Correlation) > 0.8 ~ "Very Strong",
+    abs(Correlation) > 0.6 ~ "Strong",
+    abs(Correlation) > 0.4 ~ "moderate",
+    TRUE ~ "Weak"
+  )) 
+corr_d <- corr_d |>
+  mutate(hover_text = paste0(
+      "Comparision: ", Health_Condition1 , " vs " , Health_Condition2,
+      "<br>Correlation: ", round(Correlation, 3),
+      "<br>Relationship: ", relationship
+    ))
+  
+   
+#NOW Interactivity: 
+
+# press <- ggplotly(heat, tooltip = "text") %>% 
+#   style(text = corr_d$hover_text, 
+#         traces = 1:length(corr))  #1:length(corr) makes sure thee text is applied to EACH square.. 
+
+plot_ly(
+  data = corr_d,
+  x = ~Health_Condition1,
+  y = ~Health_Condition2,
+  z = ~Correlation,
+  zmin = 0.5,
+  zmax = 1,
+  #colorscale = list(c(0, "white"), C(1,"red")),
+  type = "heatmap",
+  xgap = 2,
+  ygap = 2, 
+#   #mode = "markers",
+    hovertext = ~hover_text,
+    hoverinfo = "text") |>
+  plotly::layout(
+     title = list(text = "Correlation Heatmap: Health Conditions", x = 0))
+```
+
+## What Does This Plot Mean?: 
+*This plot is intended to show the correlation between all 4 of the health conditions that the data set includes to see how the conditions may relate to themselves. Each Correlation made for the map is calculated using all the data excluding the NA values for that specific variable combination. The resulting correlation matrix contains 16 rows, one for every variable pair including a pair with itself (so 4x4). The tooltip here is constructed so it gives additional information about each individual cell. This contains the comparison, the exact value of the correlation coefficient, and an interpretation of what that relationship means (if it's strong vs. weak). 
+This is an important correlation to make because in the actual data, you may be able to look up the individual health conditions rates for a specific neighborhood. But there isn't really a method that can be used to show how those conditions may relate to each other across the city. The heatmap reveals that obesity, hypertension, and diabetes move together with a correlation of 0.877 between obesity and hypertension and 0.879 for obesity and diabetes. So that indicates that neighborhoods with high obesity will most likely carry high hypertension and diabetes Asthma, on the other hand, has noticeably weaker correlations between the other three health conditions (0.685, 0.794, 0.767 - respective to the graph). This means that the Asthma condition may be driven by different factors like air quality, housing conditions, and other environmental conditions. 
+One thing to note is that there were NA values in the diabetes and asthma data sets, which may be a reflection of the community and the area itself. It might be because the population sizes were too small for reliable data to be pulled from that area, for example. Another thing is that these correlations partly reflect the population since the health conditions had to be made into percentages. So they don't solely reflect the health conditions independently. Despite these limitations, the correlations across all the pairs demonstrate a compelling case that these conditions are geographically driven across communities in Chicago.*
+
+
+
+## 13.1 The Clinical "Lollipop" Gradient
+```{r}
+#To add the geographical component: 
+quantile(df1_clean$Latitude, c(0.33, 0.67)) 
+df1_clean <- df1_clean %>%
+  mutate(result = case_when(Latitude < 41.78060 ~ "South", 
+  41.78060 < Latitude & Latitude < 41.89917 ~ "Central", 
+  TRUE ~ "North"),  
+  result = as.factor(result)) #Using the same geogrphic sectioning from earlier in order to show which regions the top 15 fall into. 
+
+top_15d <- df1_clean %>% 
+  arrange(desc(HCSDIA_2023.2024)) %>%  #arrange the data in descending order 
+   slice_head(n=15) %>% #Take the top 15 values
+mutate(tooltip = paste0(
+      "<br>Population: ", Population,
+      "<br>Asthma Rate: ", round(HCSATH_2023.2024), "%",
+      "<br>Hypertension Rate: ", round(HCSHYT_2023.2024), "%",
+      "<br>Obesity Rate: ", round(HCSOB_2023.2024), "%",
+      "<br>Diabetes Rate: ", round(HCSDIA_2023.2024), "%")) #using the hover tip so that you can see the relationship in percentages in each graph EVEN though we've included the 4 lollipop graphs for each health condition. 
+
+
+plot_1 <- plot_ly() %>% #Don't need to add anything to the actually plot_ly function because it doesn't have a lollipop graph marker.. So we have to add pipes (add_segments and add_markers) in order to make the plot into a lollipop graph. All features can be input into those functions.  
+#Lollipop for Diabetes: 
+  add_segments(data = top_15d, x = ~0, xend = ~HCSDIA_2023.2024, y = ~Name, yend = ~Name, line = list(color ="black")) %>% #to make the line of the lollipop graph
+ add_markers(data = top_15d, x = ~HCSDIA_2023.2024, y = ~Name, color = ~result, marker = list(size = 10), hovertext = ~tooltip, hoverinfo = "text") %>% #add the dot of the lollipop 
+   plotly::layout( 
+     title = "Top 15 by Diabetes Rate",
+    xaxis = list(title = "Diabetes (%)"), 
+    yaxis = list(title = "Neighborhood Name", categoryorder = "total ascending"))
+plot_1
+
+# THIS SAME CODE APPLIES FOR THE OTHER 4 CONDITIONS
+```
+
+## 13.2 Lollipop graph for Asthma Top 15
+```{r}
+#To add the geographical component: 
+quantile(df1_clean$Latitude, c(0.33, 0.67)) 
+df1_clean <- df1_clean %>%
+  mutate(result = case_when(Latitude < 41.78060 ~ "South", 
+  41.78060 < Latitude & Latitude < 41.89917 ~ "Central", 
+  TRUE ~ "North"),  
+  result = as.factor(result))
+
+top_15a <- df1_clean %>% 
+  arrange(desc(HCSATH_2023.2024)) %>%  #arrange the data in descending order 
+   slice_head(n=15) %>% #Take the top 15 values
+mutate(tooltip = paste0(
+      "<br>Population: ", Population,
+      "<br>Asthma Rate: ", round(HCSATH_2023.2024), "%",
+      "<br>Hypertension Rate: ", round(HCSHYT_2023.2024), "%",
+      "<br>Obesity Rate: ", round(HCSOB_2023.2024), "%",
+      "<br>Diabetes Rate: ", round(HCSDIA_2023.2024), "%"))
+
+
+#Make the static Lollipop plot:
+ggplot(top_15a, aes(x = Name, y = HCSATH_2023.2024)) +
+  geom_segment(aes(x= Name, xend = Name, y = 0, yend = HCSATH_2023.2024))+
+  geom_point(aes(color = result), size = 2, alpha = 0.6)+
+    coord_flip() +  # Makes the lollipop graph horizontal instead.
+     theme_light()+
+       labs(
+         title = "Top 15 Neighborhoods vs. Diabetes",
+         y = "Asthma (%)" 
+       )
+
+plot_2 <- plot_ly() %>%
+#Lollipop for Asthma: 
+  add_segments(data = top_15a, x = ~0, xend = ~HCSATH_2023.2024, y = ~Name, yend = ~Name, line = list(color ="black")) %>%
+  add_markers(data = top_15a, x = ~HCSATH_2023.2024, y = ~Name, color = ~result, marker = list(size = 10), hovertext = ~tooltip, hoverinfo = "text") %>% #You can still double click to select and deselect
+   plotly::layout( 
+    xaxis = list(title = "Asthma (%)"), 
+    yaxis = list(title = "Neighborhood Name", categoryorder = "total ascending") 
+    )
+
+```
+
+## 13.3 Top 15 of Obesity Lollipop graph
+
+```{r}
+#To add the geographical component: 
+quantile(df1_clean$Latitude, c(0.33, 0.67)) 
+df1_clean <- df1_clean %>%
+  mutate(result = case_when(Latitude < 41.78060 ~ "South", 
+  41.78060 < Latitude & Latitude < 41.89917 ~ "Central", 
+  TRUE ~ "North"),  
+  result = as.factor(result))
+
+top_15o <- df1_clean %>% 
+  arrange(desc(HCSOB_2023.2024)) %>%  #arrange the data in descending order 
+   slice_head(n=15) %>% #Take the top 15 values
+mutate(tooltip = paste0(
+      "<br>Population: ", Population,
+      "<br>Asthma Rate: ", round(HCSATH_2023.2024), "%",
+      "<br>Hypertension Rate: ", round(HCSHYT_2023.2024), "%",
+      "<br>Obesity Rate: ", round(HCSOB_2023.2024), "%",
+      "<br>Diabetes Rate: ", round(HCSDIA_2023.2024), "%"))
+
+#Make the static Lollipop plot:
+ggplot(top_15o, aes(x = Name, y = HCSOB_2023.2024)) +
+  geom_segment(aes(x= Name, xend = Name, y = 0, yend = HCSOB_2023.2024))+
+  geom_point(aes(color = result), size = 2, alpha = 0.6)+
+    coord_flip() +  #Makes the lollipop graph horizontal instead.
+     theme_light()+
+       labs(
+         title = "Top 15 Neighborhoods vs. obesity",
+         y = "Obesity (%)" #because I used coord_flip(), I have to name y = in order to rename the axis with diabetes.
+       )
+
+plot_3 <- plot_ly() %>%
+#Lollipop for Obesity: 
+  add_segments(data = top_15o, x = ~0, xend = ~HCSOB_2023.2024, y = ~Name, yend = ~Name, line = list(color ="black")) %>%
+  add_markers(data = top_15o, x = ~HCSOB_2023.2024, y = ~Name, color = ~result, marker = list(size = 10), hovertext = ~tooltip, hoverinfo = "text") %>% #You can still double click to select and deselect
+   plotly::layout( 
+    xaxis = list(title = "Obesity (%)"), 
+    yaxis = list(title = "Neighborhood Name", categoryorder = "total ascending") 
+    )
+
+```
+
+## 13.4. Top 15 neighborhoods with highest Hypertension rates
+
+```{r}
+quantile(df1_clean$Latitude, c(0.33, 0.67)) 
+df1_clean <- df1_clean %>%
+  mutate(result = case_when(Latitude < 41.78060 ~ "South", 
+  41.78060 < Latitude & Latitude < 41.89917 ~ "Central", 
+  TRUE ~ "North"),  
+  result = as.factor(result))
+
+top_15h <- df1_clean %>% 
+  arrange(desc(HCSHYT_2023.2024)) %>%  #arrange the data in descending order 
+   slice_head(n=15) %>% #Take the top 15 values
+mutate(tooltip = paste0(
+      "<br>Population: ", Population,
+      "<br>Asthma Rate: ", round(HCSATH_2023.2024), "%",
+      "<br>Hypertension Rate: ", round(HCSHYT_2023.2024), "%",
+      "<br>Obesity Rate: ", round(HCSOB_2023.2024), "%",
+      "<br>Diabetes Rate: ", round(HCSDIA_2023.2024), "%"))
+
+ggplot(top_15h, aes(x = Name, y = HCSHYT_2023.2024)) +
+  geom_segment(aes(x= Name, xend = Name, y = 0, yend = HCSHYT_2023.2024))+
+  geom_point(aes(color = result), size = 2, alpha = 0.6)+
+    coord_flip() +  # Make the lollipop graph horizontal instead.
+     theme_light()+
+       labs(
+         title = "Top 15 Neighborhoods vs. Hypertension",
+         y = "Hypertension (%)" 
+       )
+
+plot_4 <- plot_ly() %>%
+# Lollipop for Hypertension: 
+  add_segments(data = top_15h, x = ~0, xend = ~HCSHYT_2023.2024, y = ~Name, yend = ~Name, line = list(color ="black")) %>%
+  add_markers(data = top_15h, x = ~HCSHYT_2023.2024, y = ~Name, color = ~result, marker = list(size = 10), hovertext = ~tooltip, hoverinfo = "text") %>% #You can still double click to select and deselect
+   plotly::layout(
+    xaxis = list(title = "Hypertension (%)"), 
+    yaxis = list(title = "Neighborhood Name", categoryorder = "total ascending") 
+    )
+```
+
+## Final Explanation of all 4 plots: 
+*The code uses the same geographic separations I utilized in the scatterplot plot of park access vs obesity to split the communities into North, Central, and South regions. Then there were 4 separate data sets created - top 15 neighborhoods with the highest values of each health condition. A tooltip was utilized to display all 4 health conditions rates on each graph so we can still compare the values despite having created a separate graph for each 4 health conditions. These graphs, which display a ranked lollipop chart, highlight the different neighborhoods with the highest rates of each health condition. It can be seen that Austin's Diabetes, Obesity, and Hypertension rates stand out from the other 15 neighborhoods displayed. On top of that, the tooltip feature allows you to know more about its population, which you can compare to the other 15 neighborhoods displayed, and also know which region it falls into. Regardless of which graph you look at, the tooltip feature will show you the percentage of other health conditions, allowing you to constantly compare the values. With the geographical separations highlighted as well, we can make conclusions on which regions display the highest rates of burden and connect it to the geographic patterns established in previous analysis.  
+The top 15 for each condition don't consist of the same neighborhoods. So the neighborhoods displayed in the diabetes graph may not be seen in the Asthma plot. This is very meaningful because it shows that individual neighborhoods experience different combinations of burdens despite having strong correlations city wide. Austin being an extreme outlier in the majority of the conditions warrants checking to find out what factor makes it such a big outlier.* 
+
+## 14. The North-South Health Divide
+For context for these next 2 plots, it first needs to be described what a Cumulative Health Index is. A Cumulative Health Index is a comprehensive measure of a community's overall health status, calculated by summing multiple health outcomes, deficits, or environmental stressors over time. It signifies the total accumulated burden of diseases, risks, and stressors rather than a single illness, frequently used to assess aging (frailty) or community vulnerability to pollution. Obesity, Hypertension, Diabetes, and Asthma are all health factors we have been looking at throughout this document. This index allows for a fair, comparable measure of health across all 77 Chicago neighborhoods. The goal of this visualization is to examine whether health burden follows a geographic pattern. More specifically, whether neighborhoods in the South, Central, or North regions of Chicago carry systematically different levels of cumulative health burden.
+
+```{r}
+# building a health index (mix of scales, so normalize each one); all health outcomes will be summarized.
+df1_clean <- df1_clean %>%
+  mutate(
+    OB_pct  = HCSOB_2023.2024,                          # already a percentage
+    HYT_pct = HCSHYT_2023.2024,                         # already a percentage
+    DIA_pct = (HCSDIA_2023.2024 / Population) * 100,    # count → percentage
+    ATH_pct = (HCSATH_2023.2024 / Population) * 100,    # count → percentage
+    Health_Index = rowMeans(cbind(OB_pct, HYT_pct, DIA_pct, ATH_pct), na.rm = TRUE)
+  )
+
+
+summary(df1_clean$Health_Index)
+```
+
+
+```{r}
+
+df1_clean <- df1_clean %>%
+  mutate(hover_box = paste0( # creating a column for the tooltip identifiers
+    "<span style='font-size:16px;'><b>", Name, "</b></span><br>", # makes a title of sorts to highlight each neighborhood name
+    "<br>Region: ", result,
+    "<br>Health Index: ", round(Health_Index, 2), "%",
+    "<br>Obesity Rate: ", round(OB_pct, 1), "%",
+    "<br>Hypertension Rate: ", round(HYT_pct, 1), "%",
+    "<br>Diabetes Rate: ", round(DIA_pct, 1), "%",
+    "<br>Asthma Rate: ", round(ATH_pct, 1), "%"
+  ))
+
+# creating the visualization
+plot_geo <- ggplot(df1_clean, aes(x = result, y = Health_Index, fill = result, text = hover_box)) +
+  geom_boxplot(alpha = 0.5, outlier.shape = NA) +
+  geom_jitter(aes(text = hover_box), width = 0.15, alpha = 0.5, size = 2) +
+  scale_x_discrete(limits = c("South", "Central", "North")) +
+  labs(
+    title = "North-South Health Divide",
+    x = "Region (Binned Latitude)",
+    y = "Cumulative Health Index (%)"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+ggplotly(plot_geo, tooltip = "text")
+
+```
+
+The boxplot reveals a meaningful geographic pattern in health burden across Chicago's regions. The South region displays the widest spread of values, with several neighborhoods reaching Health Index scores above 8%, and its median sitting around 3.5%. The Central region shows the most compressed distribution, with most neighborhoods clustering between roughly 3-5%, though it contains a notable high outlier approaching 16%-- Austin. The North region, interestingly, shows a slightly higher median and tighter upper range compared to South, which may seem contradictory. However this likely reflects that the North region contains both very wealthy low-burden neighborhoods and some moderate-burden ones, pulling the box upward without extreme outliers. The individual jittered points are important here. They show that within each region there is substantial variation, meaning the regional label alone doesn't determine a neighborhood's fate. The interactive tooltip allows you to hover over any individual point to see the full breakdown of all four health conditions, which helps identify which specific condition is driving a neighborhood's index score up.
+
+
+
+## 15. EJ Burden vs. Cumulative Health
+For this final visualization, having established what EJ priority areas are, how they're distributed across Chicago's neighborhoods, and how health outcomes vary geographically, this plot tests the question does living in an environmentally burdened community predict worse clinical health outcomes? The x-axis represents the number of residents in EJ priority areas for each neighborhood, and the y-axis represents the Cumulative Health Index calculated from the four health conditions tracked throughout this document. A regression line is overlaid to show the overall directional trend. If the line slopes upward, it provides statistical evidence that higher EJ burden corresponds to higher cumulative health burden, connecting environmental conditions to clinical outcomes at the neighborhood level.
+
+```{r}
+df1_clean <- df1_clean %>%
+  mutate(hover_final = paste0(
+    "<span style='font-size:16px;'><b>", Name, "</b></span><br>", # makes a title of sorts to highlight each neighborhood name
+    "<br>Region: ", result,
+    "<br>EJ Residents: ", CHAKNKC_2023,
+    "<br>Health Index: ", round(Health_Index, 2), "%",
+    "<br>Obesity Rate: ", round(OB_pct, 1), "%",
+    "<br>Hypertension Rate: ", round(HYT_pct, 1), "%",
+    "<br>Diabetes Rate: ", round(DIA_pct, 1), "%",
+    "<br>Asthma Rate: ", round(ATH_pct, 1), "%"
+  ))
+# creating the visualization
+plot_final <- ggplot(df1_clean, aes(x = as.numeric(CHAKNKC_2023), y = Health_Index, color = result, text = hover_final)) +
+  geom_point(alpha = 0.6, size = 3) +
+  
+  geom_smooth(aes(group = 1), method = "lm", se = TRUE,
+              color = "black", linetype = "dashed") +
+  labs(
+    title = "EJ Burden vs. Cumulative Health Index",
+    x = "Residents in EJ Priority Areas",
+    y = "Cumulative Health Index (%)",
+    color = "Region"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+
+ggplotly(plot_final, tooltip = "text")
+```
+The scatter plot and its regression line together make a compelling case. The dashed regression line has a clear positive slope, meaning that as the number of EJ priority residents in a neighborhood increases, the Cumulative Health Index rises as well. The shaded confidence band around the line remains relatively narrow through the middle range of EJ values before widening at the upper end, which is expected given that fewer neighborhoods exist at extreme EJ burden levels. The color coding by region adds another layer. North neighborhoods (green) cluster heavily toward the left of the x-axis with low EJ resident counts, while Central (pink) and South (blue) neighborhoods are more spread across the x-axis, with several appearing at higher EJ values. The one point sitting at the far right of the plot at roughly 70,000 EJ residents and a Health Index near 16%, once again Austin, acts as a powerful anchor for the regression line and illustrates just how extreme the burden concentration can be. Taken together, this plot does not just describe health disparities in Chicago. It visually supports the argument that environmental burden and clinical health outcomes are linked, and that the neighborhoods carrying the most EJ weight are also the ones where residents are most likely to be living with obesity, hypertension, diabetes, and asthma simultaneously.
+
+# Github Link
+
+You can parse through the full code here:
+
+
